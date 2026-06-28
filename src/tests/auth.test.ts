@@ -1,8 +1,11 @@
 import { POST as register } from '@/app/api/auth/register/route';
 import { POST as login } from '@/app/api/auth/login/route';
+import { GET as getMe } from '@/app/api/auth/me/route';
 import { db } from '@/lib/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
+import { SignJWT } from 'jose';
+import { getJwtSecret } from '@/lib/jwt';
 
 const TEST_EMAIL = 'auth-test@taskco.test';
 const TEST_PASSWORD = 'password123';
@@ -14,6 +17,20 @@ function makeRequest(body: unknown): Request {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+function makeGetRequest(token?: string): Request {
+  const headers: Record<string, string> = {};
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  return new Request('http://localhost/api/auth/me', { method: 'GET', headers });
+}
+
+async function makeExpiredToken(): Promise<string> {
+  return new SignJWT({ sub: 'expired-user-id', email: TEST_EMAIL })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('-1s')
+    .sign(getJwtSecret());
 }
 
 async function cleanupTestUser() {
@@ -135,5 +152,54 @@ describe('POST /api/auth/login', () => {
 
     expect(res.status).toBe(400);
     expect(body.error.code).toBe('VALIDATION_ERROR');
+  });
+});
+
+// ─── GET /api/auth/me ────────────────────────────────────────────────────────
+
+describe('GET /api/auth/me', () => {
+  let validToken: string;
+
+  beforeEach(async () => {
+    const res = await register(makeRequest({ email: TEST_EMAIL, password: TEST_PASSWORD, name: TEST_NAME }));
+    const body = await res.json();
+    validToken = body.data.token;
+  });
+
+  it('returns the authenticated user profile for a valid token', async () => {
+    const res = await getMe(makeGetRequest(validToken), {});
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body.data.id).toBeDefined();
+    expect(body.data.email).toBe(TEST_EMAIL);
+    expect(body.data.name).toBe(TEST_NAME);
+    expect(body.data.createdAt).toBeDefined();
+    expect(body.data.passwordHash).toBeUndefined();
+  });
+
+  it('returns 401 with MISSING_TOKEN when authorization header is absent', async () => {
+    const res = await getMe(makeGetRequest(), {});
+    const body = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(body.error.code).toBe('MISSING_TOKEN');
+  });
+
+  it('returns 401 with TOKEN_EXPIRED for an expired token', async () => {
+    const expiredToken = await makeExpiredToken();
+    const res = await getMe(makeGetRequest(expiredToken), {});
+    const body = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(body.error.code).toBe('TOKEN_EXPIRED');
+  });
+
+  it('returns 401 with INVALID_TOKEN for a malformed token', async () => {
+    const res = await getMe(makeGetRequest('this.is.malformed'), {});
+    const body = await res.json();
+
+    expect(res.status).toBe(401);
+    expect(body.error.code).toBe('INVALID_TOKEN');
   });
 });

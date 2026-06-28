@@ -16,6 +16,7 @@ dist
 npm-debug.log*
 # testing
 coverage/
+SECURITY_AUDIT.md
 # misc / OS
 .DS_Store
 *.pem
